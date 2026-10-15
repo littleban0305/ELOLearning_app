@@ -34,14 +34,22 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -93,9 +101,11 @@ private data class StudyNote(
 )
 
 private data class QuizQuestion(
+    val type: String,
     val question: String,
     val options: List<String>,
-    val answer: Int,
+    val answer: String,
+    val acceptedAnswers: List<String>,
     val explanation: String
 )
 
@@ -126,8 +136,17 @@ private fun ELOLearningApp() {
     var selectedNote by remember { mutableStateOf<Long?>(null) }
     var editContent by remember(selectedNote) { mutableStateOf(notes.firstOrNull { it.id == selectedNote }?.content.orEmpty()) }
     var quiz by remember { mutableStateOf<List<QuizQuestion>>(emptyList()) }
-    var answers by remember { mutableStateOf(emptyList<Int>()) }
+    var answers by remember { mutableStateOf(emptyList<String>()) }
     var submitted by remember { mutableStateOf(false) }
+    var quizStarted by remember { mutableStateOf(false) }
+    var currentQuestionIndex by remember { mutableStateOf(0) }
+    var confirmSubmit by remember { mutableStateOf(false) }
+    var questionCount by remember { mutableStateOf(5) }
+    var difficulty by remember { mutableStateOf("普通") }
+    var questionType by remember { mutableStateOf("四選一") }
+    var generatedQuestionCount by remember { mutableStateOf(0) }
+    var generatedDifficulty by remember { mutableStateOf("") }
+    var generatedQuestionType by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -198,21 +217,29 @@ private fun ELOLearningApp() {
         busy = true
         error = null
         status = null
+        val requestedQuestionCount = questionCount
+        val requestedDifficulty = difficulty
+        val requestedQuestionType = questionType
         scope.launch {
             val source = notes.take(10).joinToString("\n\n") { "【${it.subject}｜${it.title}】\n${it.content.take(1800)}" }
             runCatching {
                 GeminiApi.generate(
                     apiKey = apiKey,
-                    system = "你是 ELOLearning 的出題老師。使用繁體中文，只能依據學生筆記出題，不得加入筆記中沒有的知識。answer 是正確選項索引，從 0 開始。只回傳 JSON。",
-                    prompt = "產生 5 題四選一題目。格式：{\"questions\":[{\"question\":\"題目\",\"options\":[\"A\",\"B\",\"C\",\"D\"],\"answer\":0,\"explanation\":\"解析\"}]}\n筆記：\n$source",
+                    system = "你是 ELOLearning 的出題老師。使用繁體中文，只能依據學生筆記出題，不得加入筆記中沒有的知識。只回傳 JSON，不要 Markdown。",
+                    prompt = "根據學生筆記產生 $requestedQuestionCount 題，難度為「$requestedDifficulty」，題型為「$requestedQuestionType」。JSON 格式：{\"questions\":[{\"type\":\"multiple_choice|true_false|fill_in\",\"question\":\"題目\",\"options\":[\"選項A\",\"選項B\",\"選項C\",\"選項D\"],\"answer\":0,\"acceptedAnswers\":[\"可接受答案\"],\"explanation\":\"解析\"}]}。四選一的 answer 是 0 到 3 的正確選項索引；是非題 options 固定為「是」「否」，answer 填「是」或「否」；填空題 options 填空陣列，answer 和 acceptedAnswers 填可接受的文字答案。四選一只出四選一，是非題只出是非題，填空題只出填空題，混合則均衡混合三種題型。每題都要附解析。\n筆記：\n$source",
                     json = true
                 )
             }.onSuccess { raw ->
-                runCatching { parseQuiz(raw) }
+                runCatching { parseQuiz(raw, requestedQuestionType, requestedQuestionCount) }
                     .onSuccess { generated ->
                         quiz = generated
-                        answers = List(generated.size) { -1 }
+                        answers = List(generated.size) { "" }
                         submitted = false
+                        quizStarted = false
+                        currentQuestionIndex = 0
+                        generatedQuestionCount = requestedQuestionCount
+                        generatedDifficulty = requestedDifficulty
+                        generatedQuestionType = requestedQuestionType
                         status = "題目已準備好。"
                     }
                     .onFailure { failure -> error = failure.message ?: "題目資料格式錯誤。" }
@@ -301,13 +328,27 @@ private fun ELOLearningApp() {
                     )
                     Page.QUIZ -> QuizPage(
                         noteCount = notes.size,
+                        questionCount = questionCount,
+                        difficulty = difficulty,
+                        questionType = questionType,
+                        generatedQuestionCount = generatedQuestionCount,
+                        generatedDifficulty = generatedDifficulty,
+                        generatedQuestionType = generatedQuestionType,
                         questions = quiz,
                         answers = answers,
                         submitted = submitted,
+                        started = quizStarted,
+                        currentIndex = currentQuestionIndex,
                         busy = busy,
                         onGenerate = ::createQuiz,
+                        onQuestionCountChange = { questionCount = it },
+                        onDifficultyChange = { difficulty = it },
+                        onQuestionTypeChange = { questionType = it },
+                        onStart = { quizStarted = true; currentQuestionIndex = 0 },
                         onAnswer = { index, value -> answers = answers.toMutableList().also { it[index] = value } },
-                        onSubmit = { submitted = true }
+                        onPrevious = { currentQuestionIndex = (currentQuestionIndex - 1).coerceAtLeast(0) },
+                        onNext = { currentQuestionIndex = (currentQuestionIndex + 1).coerceAtMost(quiz.lastIndex) },
+                        onSubmit = { confirmSubmit = true }
                     )
                     Page.SETTINGS -> SettingsPage(
                         name = profileName,
@@ -324,6 +365,22 @@ private fun ELOLearningApp() {
                     )
                 }
             }
+        }
+        if (confirmSubmit) {
+            AlertDialog(
+                onDismissRequest = { confirmSubmit = false },
+                title = { Text("確定交卷？") },
+                text = { Text("尚未作答的題目會以未答計算。交卷後將顯示分數與解析。") },
+                confirmButton = {
+                    TextButton(onClick = { confirmSubmit = false; submitted = true }) { Text("確認交卷") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmSubmit = false }) { Text("繼續作答") }
+                },
+                containerColor = Panel,
+                titleContentColor = Ink,
+                textContentColor = Muted
+            )
         }
     }
 }
@@ -422,42 +479,158 @@ private fun NotesPage(
 @Composable
 private fun QuizPage(
     noteCount: Int,
+    questionCount: Int,
+    difficulty: String,
+    questionType: String,
+    generatedQuestionCount: Int,
+    generatedDifficulty: String,
+    generatedQuestionType: String,
     questions: List<QuizQuestion>,
-    answers: List<Int>,
+    answers: List<String>,
     submitted: Boolean,
+    started: Boolean,
+    currentIndex: Int,
     busy: Boolean,
     onGenerate: () -> Unit,
-    onAnswer: (Int, Int) -> Unit,
+    onQuestionCountChange: (Int) -> Unit,
+    onDifficultyChange: (String) -> Unit,
+    onQuestionTypeChange: (String) -> Unit,
+    onStart: () -> Unit,
+    onAnswer: (Int, String) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
     onSubmit: () -> Unit
 ) {
+    var typeMenuExpanded by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("我的題目", color = Ink, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-        Text("從已保存的學習重點出題，交卷後查看答案與解析。", color = Muted, fontSize = 13.sp)
-        Button(onClick = onGenerate, enabled = noteCount > 0 && !busy, colors = ButtonDefaults.buttonColors(containerColor = Forest), shape = RoundedCornerShape(8.dp)) {
-            if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp) else Text(if (questions.isEmpty()) "產生練習題" else "重新出題")
-        }
-        if (noteCount == 0) EmptyState("需要先有學習重點", "先整理主題，AI 才能依照你的筆記出題。")
-        questions.forEachIndexed { questionIndex, item ->
-            Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(8.dp)) {
-                Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
-                    Text("${questionIndex + 1}. ${item.question}", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                    item.options.forEachIndexed { optionIndex, option ->
-                        val correct = submitted && optionIndex == item.answer
-                        val wrong = submitted && answers.getOrElse(questionIndex) { -1 } == optionIndex && optionIndex != item.answer
-                        Row(modifier = Modifier.fillMaxWidth().clickable(enabled = !submitted) { onAnswer(questionIndex, optionIndex) }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = answers.getOrElse(questionIndex) { -1 } == optionIndex, onClick = { if (!submitted) onAnswer(questionIndex, optionIndex) }, enabled = !submitted)
-                            Text(option, color = when { correct -> Forest; wrong -> ErrorRed; else -> Ink }, fontSize = 14.sp)
-                        }
+        Text("依照已保存的學習重點，設定題數、難度與題型。", color = Muted, fontSize = 13.sp)
+
+        if (!started && !submitted) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("題數", color = Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text("$questionCount 題（最多 50 題）", color = Forest, fontWeight = FontWeight.SemiBold)
+            }
+            Slider(
+                value = questionCount.toFloat(),
+                onValueChange = { onQuestionCountChange(it.toInt().coerceIn(1, 50)) },
+                valueRange = 1f..50f,
+                steps = 48
+            )
+
+            Text("難度", color = Ink, fontWeight = FontWeight.SemiBold)
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                listOf("簡單", "普通", "困難").forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = difficulty == option,
+                        onClick = { onDifficultyChange(option) },
+                        shape = SegmentedButtonDefaults.itemShape(index, 3)
+                    ) { Text(option) }
+                }
+            }
+
+            Text("題型", color = Ink, fontWeight = FontWeight.SemiBold)
+            androidx.compose.foundation.layout.Box {
+                OutlinedButton(onClick = { typeMenuExpanded = true }, shape = RoundedCornerShape(8.dp)) {
+                    Text(questionType)
+                }
+                DropdownMenu(expanded = typeMenuExpanded, onDismissRequest = { typeMenuExpanded = false }) {
+                    listOf("四選一", "是非題", "填空題", "混合").forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option) },
+                            onClick = { onQuestionTypeChange(option); typeMenuExpanded = false }
+                        )
                     }
-                    if (submitted) Text("解析：${item.explanation}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+
+            Button(
+                onClick = onGenerate,
+                enabled = noteCount > 0 && !busy,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Forest),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                else Text(if (questions.isEmpty()) "產生 $questionCount 題" else "重新產生題目")
+            }
+        }
+
+        if (noteCount == 0) EmptyState("需要先有學習重點", "先整理主題，AI 才能依照你的筆記出題。")
+        if (questions.isNotEmpty() && !started && !submitted) {
+            Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(8.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${questions.size} 題已準備完成", color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text("$generatedQuestionCount 題 · $generatedDifficulty · $generatedQuestionType", color = Muted, fontSize = 13.sp)
+                    Button(onClick = onStart, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Forest), shape = RoundedCornerShape(8.dp)) {
+                        Text("開始作答")
+                    }
                 }
             }
         }
-        if (questions.isNotEmpty()) {
+
+        if (questions.isNotEmpty() && started) {
+            val item = questions[currentIndex]
+            val userAnswer = answers.getOrElse(currentIndex) { "" }
+            val correct = submitted && isCorrectAnswer(item, userAnswer)
+            Text("第 ${currentIndex + 1} / ${questions.size} 題", color = Forest, fontWeight = FontWeight.SemiBold)
+            Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(8.dp)) {
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(item.question, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, lineHeight = 24.sp)
+                    if (item.type == "fill_in") {
+                        OutlinedTextField(
+                            value = userAnswer,
+                            onValueChange = { if (!submitted) onAnswer(currentIndex, it) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !submitted,
+                            singleLine = true,
+                            label = { Text("輸入答案") }
+                        )
+                    } else {
+                                        item.options.forEachIndexed { optionIndex, option ->
+                                        val optionCorrect = submitted && optionIndex.toString() == item.answer
+                            val optionWrong = submitted && normalizeAnswer(option) == normalizeAnswer(userAnswer) && !correct
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable(enabled = !submitted) { onAnswer(currentIndex, option) }.padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = userAnswer == option, onClick = { if (!submitted) onAnswer(currentIndex, option) }, enabled = !submitted)
+                                Text(option, color = when { optionCorrect -> Forest; optionWrong -> ErrorRed; else -> Ink }, fontSize = 14.sp)
+                            }
+                        }
+                    }
+                    if (submitted) {
+                        val correctAnswer = if (item.type == "multiple_choice") item.options.getOrNull(item.answer.toIntOrNull() ?: -1) ?: item.answer else item.acceptedAnswers.firstOrNull() ?: item.answer
+                        Text(if (correct) "答對了" else "正確答案：$correctAnswer", color = if (correct) Forest else ErrorRed, fontWeight = FontWeight.SemiBold)
+                        Text("解析：${item.explanation}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+                    }
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = onPrevious, enabled = currentIndex > 0, modifier = Modifier.weight(0.8f)) { Text("上一題") }
+                Button(
+                    onClick = onNext,
+                    enabled = !submitted && currentIndex < questions.lastIndex,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = Forest),
+                    shape = RoundedCornerShape(8.dp)
+                ) { Text("下一題") }
+                Button(
+                    onClick = onSubmit,
+                    enabled = !submitted,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
+                    shape = RoundedCornerShape(8.dp)
+                ) { Text("交卷") }
+            }
             if (submitted) {
-                val score = questions.indices.count { answers.getOrElse(it) { -1 } == questions[it].answer }
+                val score = questions.indices.count { isCorrectAnswer(questions[it], answers.getOrElse(it) { "" }) }
                 Text("本次答對 $score / ${questions.size} 題", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            } else Button(onClick = onSubmit, enabled = answers.any { it >= 0 }, colors = ButtonDefaults.buttonColors(containerColor = Forest), shape = RoundedCornerShape(8.dp)) { Text("交卷") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onPrevious, enabled = currentIndex > 0) { Text("上一題解析") }
+                    OutlinedButton(onClick = onNext, enabled = currentIndex < questions.lastIndex) { Text("下一題解析") }
+                }
+            }
         }
     }
 }
@@ -502,20 +675,67 @@ private fun loadNotes(context: Context): List<StudyNote> = runCatching {
     }.sortedByDescending(StudyNote::updatedAt)
 }.getOrDefault(emptyList())
 
-private fun parseQuiz(raw: String): List<QuizQuestion> {
+private fun parseQuiz(raw: String, requestedType: String, expectedCount: Int): List<QuizQuestion> {
     val first = raw.indexOf('{').takeIf { it >= 0 } ?: error("AI 回覆缺少 JSON 物件")
     val last = raw.lastIndexOf('}').takeIf { it >= first } ?: error("AI 回覆 JSON 不完整")
     val array = JSONObject(raw.substring(first, last + 1)).optJSONArray("questions") ?: error("AI 回覆缺少 questions")
     val result = (0 until array.length()).map { index ->
         val item = array.getJSONObject(index)
-        val choices = item.getJSONArray("options")
-        val options = (0 until choices.length()).map(choices::getString)
-        val answer = item.getInt("answer")
-        require(options.size == 4 && answer in options.indices) { "選項或答案索引不正確" }
-        QuizQuestion(item.getString("question"), options, answer, item.optString("explanation", ""))
+        val rawType = item.optString("type", "").lowercase()
+        val type = when {
+            rawType.contains("true") || rawType.contains("boolean") || rawType.contains("是非") -> "true_false"
+            rawType.contains("fill") || rawType.contains("blank") || rawType.contains("填空") -> "fill_in"
+            rawType.contains("choice") || rawType.contains("multiple") || rawType.contains("選擇") -> "multiple_choice"
+            requestedType == "是非題" -> "true_false"
+            requestedType == "填空題" -> "fill_in"
+            else -> "multiple_choice"
+        }
+        val choiceArray = item.optJSONArray("options")
+        val rawOptions = if (choiceArray == null) emptyList() else (0 until choiceArray.length()).map(choiceArray::getString)
+        val rawAnswer = item.opt("answer") ?: error("第 ${index + 1} 題缺少答案")
+        val rawAnswerText = if (rawAnswer is Number) rawAnswer.toInt().toString() else rawAnswer.toString().trim()
+        val options: List<String>
+        val answer: String
+        when (type) {
+            "true_false" -> {
+                options = listOf("是", "否")
+                answer = when (rawAnswerText.lowercase()) {
+                    "false", "f", "no", "0", "否", "錯", "錯誤" -> "否"
+                    "true", "t", "yes", "1", "是", "對", "正確" -> "是"
+                    else -> error("第 ${index + 1} 題的答案不是有效的是非選項")
+                }
+            }
+            "fill_in" -> {
+                options = emptyList()
+                answer = rawAnswerText
+                require(answer.isNotBlank()) { "第 ${index + 1} 題缺少填空答案" }
+            }
+            else -> {
+                options = rawOptions
+                val answerIndex = rawAnswerText.toIntOrNull() ?: error("第 ${index + 1} 題的選擇題答案索引無效")
+                require(options.size == 4 && answerIndex in options.indices) { "第 ${index + 1} 題的選項格式不正確" }
+                answer = answerIndex.toString()
+            }
+        }
+        val acceptedArray = item.optJSONArray("acceptedAnswers")
+        val accepted = if (acceptedArray == null) emptyList() else (0 until acceptedArray.length()).map(acceptedArray::getString)
+        QuizQuestion(type, item.getString("question"), options, answer, (listOf(answer) + accepted).distinct(), item.optString("explanation", ""))
     }
     require(result.isNotEmpty()) { "AI 沒有產生題目" }
+    require(result.size == expectedCount) { "預期產生 $expectedCount 題，實際取得 ${result.size} 題，請重新產生。" }
     return result
+}
+
+private fun normalizeAnswer(value: String): String = value.trim().lowercase().replace("\\s+".toRegex(), "")
+
+private fun isCorrectAnswer(question: QuizQuestion, answer: String): Boolean {
+    if (answer.isBlank()) return false
+    val normalized = normalizeAnswer(answer)
+    if (question.type == "multiple_choice") {
+        val answerIndex = question.answer.toIntOrNull() ?: return false
+        return normalizeAnswer(question.options.getOrNull(answerIndex).orEmpty()) == normalized
+    }
+    return question.acceptedAnswers.any { normalizeAnswer(it) == normalized }
 }
 
 private object GeminiApi {
@@ -524,7 +744,7 @@ private object GeminiApi {
         val payload = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-            .put("generationConfig", JSONObject().put("temperature", 0.25).put("maxOutputTokens", 3000).apply {
+            .put("generationConfig", JSONObject().put("temperature", 0.25).put("maxOutputTokens", 16000).apply {
                 if (json) put("responseMimeType", "application/json")
             })
         var attempt = 0
