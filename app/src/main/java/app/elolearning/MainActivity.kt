@@ -61,6 +61,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -526,23 +527,36 @@ private object GeminiApi {
             .put("generationConfig", JSONObject().put("temperature", 0.25).put("maxOutputTokens", 3000).apply {
                 if (json) put("responseMimeType", "application/json")
             })
-        val connection = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as java.net.HttpURLConnection
-        connection.requestMethod = "POST"
-        connection.connectTimeout = 15000
-        connection.readTimeout = 90000
-        connection.doOutput = true
-        connection.setRequestProperty("x-goog-api-key", apiKey)
-        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        try {
-            connection.outputStream.use { it.write(payload.toString().toByteArray(StandardCharsets.UTF_8)) }
-            val status = connection.responseCode
-            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            val body = stream?.use { input -> BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use(BufferedReader::readText) }.orEmpty()
-            if (status !in 200..299) error("Gemini 回應 $status：${body.take(320)}")
-            val parts = JSONObject(body).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
-            (0 until parts.length()).joinToString("") { parts.getJSONObject(it).optString("text") }.trim().ifBlank { error("Gemini 沒有回傳內容。") }
-        } finally {
-            connection.disconnect()
+        var attempt = 0
+        while (true) {
+            val connection = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as java.net.HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 90000
+            connection.doOutput = true
+            connection.setRequestProperty("x-goog-api-key", apiKey)
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            try {
+                connection.outputStream.use { it.write(payload.toString().toByteArray(StandardCharsets.UTF_8)) }
+                val status = connection.responseCode
+                val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                val body = stream?.use { input -> BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use(BufferedReader::readText) }.orEmpty()
+                if (status == 503 && attempt < 2) {
+                    val retryDelay = connection.getHeaderField("Retry-After")
+                        ?.toLongOrNull()
+                        ?.times(1_000)
+                        ?.coerceIn(1_000, 10_000)
+                        ?: (1_000L shl attempt)
+                    attempt++
+                    delay(retryDelay)
+                    continue
+                }
+                if (status !in 200..299) error("Gemini 回應 $status：${body.take(320)}")
+                val parts = JSONObject(body).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
+                return@withContext (0 until parts.length()).joinToString("") { parts.getJSONObject(it).optString("text") }.trim().ifBlank { error("Gemini 沒有回傳內容。") }
+            } finally {
+                connection.disconnect()
+            }
         }
     }
 }
