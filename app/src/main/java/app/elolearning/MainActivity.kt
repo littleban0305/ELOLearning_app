@@ -526,7 +526,7 @@ private object GeminiApi {
             .put("generationConfig", JSONObject().put("temperature", 0.25).put("maxOutputTokens", 3000).apply {
                 if (json) put("responseMimeType", "application/json")
             })
-        val connection = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent").openConnection() as java.net.HttpURLConnection
+        val connection = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as java.net.HttpURLConnection
         connection.requestMethod = "POST"
         connection.connectTimeout = 15000
         connection.readTimeout = 90000
