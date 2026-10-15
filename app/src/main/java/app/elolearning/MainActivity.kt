@@ -528,7 +528,8 @@ private object GeminiApi {
                 if (json) put("responseMimeType", "application/json")
             })
         var attempt = 0
-        while (true) {
+        var result: String? = null
+        while (result == null) {
             val connection = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as java.net.HttpURLConnection
             connection.requestMethod = "POST"
             connection.connectTimeout = 15000
@@ -553,11 +554,12 @@ private object GeminiApi {
                 }
                 if (status !in 200..299) error("Gemini 回應 $status：${body.take(320)}")
                 val parts = JSONObject(body).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
-                return@withContext (0 until parts.length()).joinToString("") { parts.getJSONObject(it).optString("text") }.trim().ifBlank { error("Gemini 沒有回傳內容。") }
+                result = (0 until parts.length()).joinToString("") { parts.getJSONObject(it).optString("text") }.trim().ifBlank { error("Gemini 沒有回傳內容。") }
             } finally {
                 connection.disconnect()
             }
         }
+        result ?: error("Gemini 沒有回傳內容。")
     }
 }
 
